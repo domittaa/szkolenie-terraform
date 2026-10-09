@@ -1,0 +1,96 @@
+name: terraform
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to apply
+        type: choice
+        options: [shared, dev, prod]
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_VERSION: 1.9.8
+  WIF_PROVIDER: projects/123456789012/locations/global/workloadIdentityPools/github/providers/github
+  TF_SA: gh-terraform@pizza-shared-4821.iam.gserviceaccount.com
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - run: terraform fmt -check -recursive
+
+  plan:
+    if: github.event_name == 'pull_request'
+    needs: fmt
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [shared, dev, prod]
+    defaults:
+      run:
+        working-directory: envs/${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TF_SA }}
+      - run: terraform init -input=false
+      - run: terraform validate
+      - run: terraform plan -input=false -lock=false -no-color
+
+  apply-dev:
+    if: github.event_name == 'push'
+    needs: fmt
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: envs/dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TF_SA }}
+      - run: terraform init -input=false
+      - run: terraform apply -input=false -auto-approve
+
+  # shared and prod are applied manually, the prod GitHub environment requires an approval
+  apply-manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: envs/${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TF_SA }}
+      - run: terraform init -input=false
+      - run: terraform apply -input=false -auto-approve
